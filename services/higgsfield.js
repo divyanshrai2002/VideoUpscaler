@@ -4,25 +4,40 @@ const MODELS = {
   bytedance: {
     endpoints: ["bytedance_video_upscale", "bytedance/video-upscale"],
     resolutions: { "1080p": "1080p", "2k": "2k", "4k": "4k", "8k": "8k" },
-    body(videoUrl, resolution) {
-      return { video_url: videoUrl, resolution };
+    body(videoUrl, resolution, options) {
+      return {
+        video_url: videoUrl,
+        resolution,
+        creativity_mode: options.creativityMode,
+        frame_interpolation: options.frameInterpolation,
+      };
     },
   },
   flux3: {
-    endpoints: ["flux_3_upscale", "flux/upscale/video", "flux-3/upscale/video"],
+    endpoints: ["black-forest-labs/flux-video-upscale", "flux/upscale/video"],
     resolutions: { "1080p": "1080p", "2k": "2k", "4k": "4k" },
-    body(videoUrl, resolution) {
-      return { video_url: videoUrl, resolution };
+    body(videoUrl, resolution, options) {
+      return {
+        video_url: videoUrl,
+        input_video: videoUrl,
+        resolution,
+        upscale_factor: resolution === "4k" ? 3 : resolution === "2k" ? 2 : 1.5,
+        creativity: options.creativityMode === "bold" ? 1 : 0,
+        creativity_mode: options.creativityMode,
+        frame_interpolation: options.frameInterpolation,
+      };
     },
   },
   topaz: {
     endpoints: ["topaz_video", "topaz/upscale/video"],
     resolutions: { "1080p": "1080p", "2k": "2k", "4k": "4k", "2160p": "2160p" },
-    body(videoUrl, resolution) {
+    body(videoUrl, resolution, options) {
       return {
         input_video: { url: videoUrl },
         video_url: videoUrl,
         resolution,
+        creativity_mode: options.creativityMode,
+        frame_interpolation: options.frameInterpolation,
       };
     },
   },
@@ -71,19 +86,24 @@ function isMissingModel(error) {
   return text.includes("model_not_found") || text.includes("model not found");
 }
 
-async function submitModel(model, videoUrl, resolution) {
+async function submitModel(model, videoUrl, resolution, options) {
   let lastError;
   for (const endpoint of model.endpoints) {
     try {
       const submitted = await higgsfield(`/${endpoint}`, {
         method: "POST",
-        body: JSON.stringify(model.body(videoUrl, resolution)),
+        body: JSON.stringify(model.body(videoUrl, resolution, options)),
       });
       return { ...submitted, endpoint };
     } catch (error) {
       lastError = error;
       if (!isMissingModel(error)) throw error;
     }
+  }
+  if (isMissingModel(lastError) && model.endpoints.some((endpoint) => endpoint.includes("flux"))) {
+    throw new Error(
+      "flux3 is not available on this Higgsfield API key. bytedance and topaz are the upscale models this account can call."
+    );
   }
   throw lastError;
 }

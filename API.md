@@ -6,19 +6,19 @@ Har request:
 
 - Method: `POST`
 - Header: `Content-Type: application/json`
-- Body: JSON only. URL params ya form-data mat bhejna.
-
-Upscale turant video return nahi karta. Pehle job create hoti hai (`status: 1`). Backend Higgsfield ko poll karta hai. Frontend ko `POST /api/videos/get` se status check karte rehna hai jab tak `status` `2` (done) ya `3` (failed) na ho.
+- Body: JSON only.
 
 ## Status
 
 | status | stage | matlab |
 |---|---|---|
-| 1 | `processing` | upscale chal raha hai, `outputUrl` abhi `null` |
+| 1 | `processing` | entry ban gayi hai, video background me generate ho raha hai |
 | 2 | `completed` | `outputUrl` ready hai |
 | 3 | `failed` | `errorMessage` dekho |
 
-## 1. Start upscale
+`/api/upscale` request aate hi DB me entry banata hai with `status = 1`. Backend background me video status check karta hai. Complete hone par same row me `outputUrl`, `status = 2`, `stage = completed` update hota hai. Error aane par `status = 3`, `stage = failed`, `errorMessage` update hota hai.
+
+## 1. Upscale Video
 
 `POST /api/upscale`
 
@@ -27,7 +27,9 @@ Upscale turant video return nahi karta. Pehle job create hoti hai (`status: 1`).
   "userId": 1,
   "videoUrl": "https://example.com/clip.mp4",
   "model": "bytedance",
-  "resolution": "4k"
+  "resolution": "4k",
+  "creativityMode": "subtle",
+  "frameInterpolation": true
 }
 ```
 
@@ -36,7 +38,9 @@ Upscale turant video return nahi karta. Pehle job create hoti hai (`status: 1`).
 | `userId` | yes | positive integer |
 | `videoUrl` | yes | public `https` URL |
 | `model` | yes | `bytedance`, `flux3`, `topaz` |
-| `resolution` | yes | model ke hisaab se, neeche |
+| `resolution` | yes | model ke hisaab se |
+| `creativityMode` | no | `subtle` (default) ya `bold` |
+| `frameInterpolation` | no | `true` ya `false`, default `false` |
 
 Resolutions:
 
@@ -52,12 +56,13 @@ Success `202`:
   "id": 15,
   "requestId": "uuid",
   "videoUrl": "https://example.com/clip.mp4",
+  "creativityMode": "subtle",
+  "frameInterpolation": true,
+  "outputUrl": null,
   "status": 1,
   "stage": "processing"
 }
 ```
-
-`id` save karo. Polling isi `id` se hogi. `outputUrl` is response mein nahi aata.
 
 Error `400` / `500`:
 
@@ -65,17 +70,15 @@ Error `400` / `500`:
 { "success": false, "message": "videoUrl must be an https URL" }
 ```
 
-## 2. Poll one video
+## 2. Fetch One Video
 
 `POST /api/videos/get`
-
-Har 4 second pe call karo, jab tak `status` `2` ya `3` na ho.
 
 ```json
 { "id": 15 }
 ```
 
-Success `200` while processing:
+Success `200`:
 
 ```json
 {
@@ -98,40 +101,19 @@ Success `200` while processing:
 }
 ```
 
-Jab complete ho:
+Jab complete ho jaye:
 
-- `status` = `2`
-- `stage` = `completed`
-- `outputUrl` = upscaled video URL (preview aur download isi se)
+- `status`: `2`
+- `stage`: `completed`
+- `outputUrl`: generated video URL
 
-Jab fail ho:
+Jab fail ho jaye:
 
-- `status` = `3`
-- `stage` = `failed`
-- `errorMessage` = reason
-- `outputUrl` = `null`
+- `status`: `3`
+- `stage`: `failed`
+- `errorMessage`: failure reason
 
-Not found `404`:
-
-```json
-{ "success": false, "message": "Video not found" }
-```
-
-Missing id `400`:
-
-```json
-{ "success": false, "message": "id is required in JSON body" }
-```
-
-Frontend loop:
-
-1. `POST /api/upscale` se `id` lo.
-2. `POST /api/videos/get` with `{ "id" }`.
-3. `status === 1` ho to 4s baad dubara call karo.
-4. `status === 2` ho to `outputUrl` dikhao.
-5. `status === 3` ho to `errorMessage` dikhao aur poll band karo.
-
-## 3. List videos
+## 3. Fetch Videos
 
 `POST /api/videos`
 
@@ -147,34 +129,7 @@ Ek user ki videos:
 { "userId": 1 }
 ```
 
-Success `200`:
-
-```json
-{
-  "success": true,
-  "videos": [
-    {
-      "id": 15,
-      "userId": 1,
-      "name": "Video Upscale",
-      "videoUrl": "https://example.com/clip.mp4",
-      "outputUrl": "https://cdn.example.com/upscaled.mp4",
-      "model": "bytedance",
-      "resolution": "4k",
-      "requestId": "uuid",
-      "errorMessage": null,
-      "stage": "completed",
-      "status": 2,
-      "created": "2026-10-05T10:30:00.000Z",
-      "modified": "2026-10-05T10:35:00.000Z"
-    }
-  ]
-}
-```
-
-Deleted rows is list mein nahi aati.
-
-## 4. Delete video
+## 4. Delete Video
 
 `POST /api/videos/delete`
 
@@ -187,5 +142,3 @@ Success `200`:
 ```json
 { "success": true, "id": 15 }
 ```
-
-Row hide ho jati hai (`isDeleted`). Dobara get ya list mein nahi aayegi. Galat id pe `404`.
