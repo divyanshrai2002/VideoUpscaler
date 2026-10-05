@@ -2,25 +2,42 @@
 
 Base URL: `http://localhost:6008`
 
-Har request:
+All APIs use:
 
 - Method: `POST`
 - Header: `Content-Type: application/json`
-- Body: JSON only.
+- Body: JSON
 
-## Status
+## Status Values
 
-| status | stage | matlab |
+| status | stage | meaning |
 |---|---|---|
-| 1 | `processing` | entry ban gayi hai, video background me generate ho raha hai |
-| 2 | `completed` | `outputUrl` ready hai |
-| 3 | `failed` | `errorMessage` dekho |
+| `1` | `processing` | DB entry created, video is generating in background |
+| `2` | `completed` | `outputUrl` is ready |
+| `3` | `failed` | check `errorMessage` |
 
-`/api/upscale` request aate hi DB me entry banata hai with `status = 1`. Backend background me video status check karta hai. Complete hone par same row me `outputUrl`, `status = 2`, `stage = completed` update hota hai. Error aane par `status = 3`, `stage = failed`, `errorMessage` update hota hai.
+`videoUrl` in responses is the original user-provided source URL. `outputUrl` is updated later from the Higgsfield status response.
 
-## 1. Upscale Video
+## Models
+
+| model | resolutions | notes |
+|---|---|---|
+| `bytedance` | `1080p`, `2k`, `4k`, `8k` | primary upscale model |
+| `flux3` | `1080p`, `2k`, `4k` | may return `model_not_found` if not enabled on the Higgsfield API key |
+| `topaz` | `1080p`, `2k`, `4k`, `2160p` | alternate upscale model |
+
+Optional settings:
+
+| field | values | default |
+|---|---|---|
+| `creativityMode` | `subtle`, `bold` | `subtle` |
+| `frameInterpolation` | `true`, `false` | `false` |
+
+## 1. Start Upscale
 
 `POST /api/upscale`
+
+Request:
 
 ```json
 {
@@ -29,24 +46,18 @@ Har request:
   "model": "bytedance",
   "resolution": "4k",
   "creativityMode": "subtle",
-  "frameInterpolation": true
+  "frameInterpolation": false
 }
 ```
 
-| field | required | values |
+Required fields:
+
+| field | required | validation |
 |---|---|---|
 | `userId` | yes | positive integer |
-| `videoUrl` | yes | public `https` URL |
+| `videoUrl` | yes | must start with `https://` |
 | `model` | yes | `bytedance`, `flux3`, `topaz` |
-| `resolution` | yes | model ke hisaab se |
-| `creativityMode` | no | `subtle` (default) ya `bold` |
-| `frameInterpolation` | no | `true` ya `false`, default `false` |
-
-Resolutions:
-
-- `bytedance`: `1080p`, `2k`, `4k`, `8k`
-- `flux3`: `1080p`, `2k`, `4k`
-- `topaz`: `1080p`, `2k`, `4k`, `2160p`
+| `resolution` | yes | must be supported by selected model |
 
 Success `202`:
 
@@ -54,28 +65,98 @@ Success `202`:
 {
   "success": true,
   "id": 15,
-  "requestId": "uuid",
+  "requestId": "hf-request-id",
   "videoUrl": "https://example.com/clip.mp4",
   "creativityMode": "subtle",
-  "frameInterpolation": true,
+  "frameInterpolation": false,
   "outputUrl": null,
   "status": 1,
   "stage": "processing"
 }
 ```
 
-Error `400` / `500`:
+What happens after success:
+
+- Row is inserted into `explainerVideo`.
+- `sourceUrl` stores the input `videoUrl`.
+- `outputUrl` is initially `NULL`.
+- Backend polls Higgsfield in background.
+- On success, same row updates to `status = 2`, `stage = completed`, and `outputUrl = Higgsfield generated URL`.
+- On failure, same row updates to `status = 3`, `stage = failed`, and `errorMessage`.
+
+Common errors:
+
+```json
+{ "success": false, "message": "userId is required in JSON body" }
+```
 
 ```json
 { "success": false, "message": "videoUrl must be an https URL" }
 ```
 
-## 2. Fetch One Video
+```json
+{ "success": false, "message": "model must be bytedance, flux3, or topaz" }
+```
+
+```json
+{ "success": false, "message": "creativityMode must be subtle or bold" }
+```
+
+## 2. Fetch Videos
+
+`POST /api/videos`
+
+Fetch all non-deleted videos:
+
+```json
+{}
+```
+
+Fetch one user's videos:
+
+```json
+{
+  "userId": 1
+}
+```
+
+Success `200`:
+
+```json
+{
+  "success": true,
+  "videos": [
+    {
+      "id": 15,
+      "userId": 1,
+      "name": "Video Upscale",
+      "videoUrl": "https://example.com/clip.mp4",
+      "outputUrl": null,
+      "model": "bytedance",
+      "resolution": "4k",
+      "requestId": "hf-request-id",
+      "errorMessage": null,
+      "creativityMode": "subtle",
+      "frameInterpolation": false,
+      "stage": "processing",
+      "status": 1,
+      "created": "2026-10-05T10:30:00.000Z",
+      "modified": "2026-10-05T10:30:00.000Z"
+    }
+  ]
+}
+```
+
+## 3. Fetch One Video
 
 `POST /api/videos/get`
 
+Request:
+
 ```json
-{ "id": 15 }
+{
+  "id": 15
+}
 ```
 
 Success `200`:
@@ -88,57 +169,60 @@ Success `200`:
     "userId": 1,
     "name": "Video Upscale",
     "videoUrl": "https://example.com/clip.mp4",
-    "outputUrl": null,
+    "outputUrl": "https://higgsfield-output-url.example/video.mp4",
     "model": "bytedance",
     "resolution": "4k",
-    "requestId": "uuid",
+    "requestId": "hf-request-id",
     "errorMessage": null,
-    "stage": "processing",
-    "status": 1,
+    "creativityMode": "subtle",
+    "frameInterpolation": false,
+    "stage": "completed",
+    "status": 2,
     "created": "2026-10-05T10:30:00.000Z",
-    "modified": "2026-10-05T10:30:00.000Z"
+    "modified": "2026-10-05T10:35:00.000Z"
   }
 }
 ```
 
-Jab complete ho jaye:
-
-- `status`: `2`
-- `stage`: `completed`
-- `outputUrl`: generated video URL
-
-Jab fail ho jaye:
-
-- `status`: `3`
-- `stage`: `failed`
-- `errorMessage`: failure reason
-
-## 3. Fetch Videos
-
-`POST /api/videos`
-
-Saari videos:
+Errors:
 
 ```json
-{}
+{ "success": false, "message": "id is required in JSON body" }
 ```
 
-Ek user ki videos:
-
 ```json
-{ "userId": 1 }
+{ "success": false, "message": "Video not found" }
 ```
 
 ## 4. Delete Video
 
 `POST /api/videos/delete`
 
+Request:
+
 ```json
-{ "id": 15 }
+{
+  "id": 15
+}
 ```
 
 Success `200`:
 
 ```json
-{ "success": true, "id": 15 }
+{
+  "success": true,
+  "id": 15
+}
+```
+
+This soft deletes the row by setting `isDeleted = 1`. Deleted rows do not appear in fetch APIs.
+
+Errors:
+
+```json
+{ "success": false, "message": "id is required in JSON body" }
+```
+
+```json
+{ "success": false, "message": "Video not found" }
 ```
